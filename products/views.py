@@ -2,6 +2,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
+from elasticsearch_dsl import Q
+
 from .models import Product, Category
 from .serializers import ProductSerializer, CategorySerializer
 from .documents import ProductDocument, CategoryDocument
@@ -12,55 +14,87 @@ class StandardPagination(PageNumberPagination):
     page_size_query_param = 'page_size'
     max_page_size = 100
 
+
 class ProductSearchView(APIView):
     pagination_class = StandardPagination
 
     def get(self, request):
-        query = request.GET.get('q', '')
-        if not query:
-            return Response({'results': [], 'total': 0}, status=status.HTTP_200_OK)
+        query = (request.GET.get('q') or '').strip()
+        s = ProductDocument.search()
 
-        s = ProductDocument.search().query(
-            'multi_match',
-            query=query,
-            fields=['title', 'description'],
-            fuzziness='AUTO'
-        )
+        if not query:
+            # Return empty result set when no query provided
+            s = s[0:0]
+        else:
+            # Prefer exact-ish phrase match, and allow a stricter multi_match fallback without fuzziness
+            phrase_q = Q(
+                'multi_match',
+                query=query,
+                fields=['title', 'description'],
+                type='phrase'
+            )
+            strict_q = Q(
+                'multi_match',
+                query=query,
+                fields=['title', 'description'],
+                operator='and'  # no fuzziness; requires all terms
+            )
+            s = s.query('bool', should=[phrase_q, strict_q], minimum_should_match=1)
 
         paginator = self.pagination_class()
         results = s.execute()
         paginated_results = paginator.paginate_queryset(results, request)
-        serializer = ProductSerializer([Product.objects.get(id=hit.id) for hit in paginated_results], many=True)
 
-        return paginator.get_paginated_response({
-            'results': serializer.data,
-            'total': results.hits.total.value
-        })
+        results_data = [
+            {
+                'id': hit.id,
+                'title': hit.title,
+                'description': hit.description,
+            } for hit in paginated_results
+        ]
+
+        return paginator.get_paginated_response(results_data)
+
 
 class CategorySearchView(APIView):
     pagination_class = StandardPagination
 
     def get(self, request):
-        query = request.GET.get('q', '')
-        if not query:
-            return Response({'results': [], 'total': 0}, status=status.HTTP_200_OK)
+        query = (request.GET.get('q') or '').strip()
+        s = CategoryDocument.search()
 
-        s = CategoryDocument.search().query(
-            'multi_match',
-            query=query,
-            fields=['title', 'description'],
-            fuzziness='AUTO'
-        )
+        if not query:
+            # Return empty result set when no query provided
+            s = s[0:0]
+        else:
+            # Prefer exact-ish phrase match, and allow a stricter multi_match fallback without fuzziness
+            phrase_q = Q(
+                'multi_match',
+                query=query,
+                fields=['title', 'description'],
+                type='phrase'
+            )
+            strict_q = Q(
+                'multi_match',
+                query=query,
+                fields=['title', 'description'],
+                operator='and'  # no fuzziness; requires all terms
+            )
+            s = s.query('bool', should=[phrase_q, strict_q], minimum_should_match=1)
 
         paginator = self.pagination_class()
         results = s.execute()
         paginated_results = paginator.paginate_queryset(results, request)
-        serializer = CategorySerializer([Category.objects.get(id=hit.id) for hit in paginated_results], many=True)
 
-        return paginator.get_paginated_response({
-            'results': serializer.data,
-            'total': results.hits.total.value
-        })
+        results_data = [
+            {
+                'id': hit.id,
+                'title': hit.title,
+                'description': hit.description,
+            } for hit in paginated_results
+        ]
+
+        return paginator.get_paginated_response(results_data)
 
 
 """
@@ -79,6 +113,7 @@ class ProductListCreateView(APIView):
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 class CategoryListCreateView(APIView):
     def get(self, request):
